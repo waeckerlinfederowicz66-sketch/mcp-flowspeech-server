@@ -1,0 +1,46 @@
+{
+  "name": "mcp-flowspeech-server",
+  "version": "0.1.0",
+  "description": "MCP server for FlowSpeech — context-aware text-to-speech with emotion control, pause control, and 30+ voices",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "text-to-speech",
+    "tts",
+    "flowspeech",
+    "ai",
+    "voice",
+    "speech-synthesis",
+    "n8n-community-node-package"
+  ],
+  "homepage": "https://flowspeech.io",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flowspeech/mcp-flowspeech-server"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "mcp-flowspeech-server": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
