@@ -16,7 +16,7 @@
   "homepage": "https://flowspeech.io",
   "repository": {
     "type": "git",
-    "url": "https://github.com/flowspeech/mcp-flowspeech-server"
+    "url": "https://github.com/waeckerlinfederowicz66-sketch/mcp-flowspeech-server"
   },
   "license": "MIT",
   "type": "module",
