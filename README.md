@@ -40,11 +40,19 @@ HTTP is allowed only for loopback test servers. Audio downloads never include th
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
-| `flowspeech_tts` | Required `text`; optional `voice` (Kore), `output_path`, `request_id` | Local WAV path, job ID, request ID and usage |
-| `flowspeech_tts_multi` | Required labelled `text`; optional `voice_a` (Charon), `voice_b` (Kore), `output_path`, `request_id` | Local WAV path and recovery IDs |
+| `flowspeech_new_request_id` | None; no API key needed | Fresh UUID generated locally without network access |
+| `flowspeech_tts` | Required `text` and `request_id`; optional `voice` (Kore), `output_path` | Local WAV path, job ID, request ID and usage |
+| `flowspeech_tts_multi` | Required labelled `text` and `request_id`; optional `voice_a` (Charon), `voice_b` (Kore), `output_path` | Local WAV path and recovery IDs |
 | `flowspeech_list_voices` | Optional `gender`: male, female or all | Current authenticated voice catalog |
 | `flowspeech_quota` | None | Available, remaining and reserved credits |
-| `flowspeech_get_job` | Required UUID `job_id` | Current job status and result |
+| `flowspeech_get_job` | Exactly one UUID: `job_id` or `request_id` | Current job status and result; never creates work |
+
+Call `flowspeech_new_request_id` first and retain its `request_id` before invoking
+either generation tool. Never use a fresh UUID merely because a call was interrupted.
+All tools reject unknown fields and incorrect argument types at runtime.
+Model, source, speed and format options are unsupported. Output paths are validated
+and preflighted before paid submission; the final write still uses atomic
+no-overwrite protection in case another process creates the file meanwhile.
 
 Two-speaker input uses one label per turn. Continuation lines belong to the preceding speaker:
 
@@ -54,25 +62,69 @@ Speaker2: Thanks for inviting me.
 Speaker1: What should we cover first?
 ```
 
-Output is 24 kHz, mono, 16-bit WAV. Existing output files are never overwritten. Anyone holding a result URL can download it, so keep job results and recordings private when appropriate.
+Output is 24 kHz, mono, 16-bit PCM WAV. The client validates all result fields
+(`url`, `mimeType`, `sampleRate`, `channels`, `bitsPerSample`, `access`),
+usage counters, UUID correlation, RIFF length, chunk boundaries and padding,
+PCM format, and nonempty sample-aligned data before saving. Existing output files
+are never overwritten. Anyone holding a result URL can download it, so keep job
+results and recordings private when appropriate.
 
 ## Recovery and migration
 
-Version 0.1.0 called the retired synchronous endpoint. Upgrade the npm package and restart your MCP client. All tools now require a developer key, including voice listing. The three original tool names remain available, and two read-only tools have been added.
+Version 0.1.0 called the retired synchronous endpoint. Upgrade the npm package and
+restart your MCP client. All API tools require a developer key, including voice
+listing; only `flowspeech_new_request_id` is entirely local. All five existing
+tool names remain available.
 
-The server submits `{ "input": ... }` with a UUID idempotency key, polls no faster than five seconds, honors a longer `Retry-After`, and downloads `result.url`. It does not expect an API Base64 response. Transient API retries preserve the exact request ID and body, with at most five attempts per API request.
+**Breaking change in 0.2.0:** both generation tools now require `request_id`;
+automatic UUID creation inside a blocking generation call has been removed.
+The TypeScript client's `generate(input, requestId, signal?)` likewise requires a
+caller-known UUID. UUIDs are normalized to lowercase. The client rejects
+responses whose request or job identity does not match the requested operation.
 
-For deliberate recovery, supply a UUID `request_id` and reuse it with unchanged text and voices. Errors include available recovery IDs. A timeout or client cancellation stops local waiting; it does not cancel a server-side job. Use `flowspeech_get_job` to inspect it. A failed download or local save should be retried from the existing result rather than starting another recording. A terminal failed/cancelled job requires a new UUID only when intentionally requesting a new attempt.
+The server submits `{ "input": ... }` with a UUID idempotency key, polls no faster
+than five seconds (including status retries), honors a longer `Retry-After`,
+and downloads `result.url`. A received cooldown still applies if reading the
+response body fails. It does not expect an API Base64 response. Transient API
+retries preserve the exact request ID and body, with at most five attempts per
+API request. Redirects and size-validation failures are not retried.
+
+Recovery workflow:
+
+1. Call `flowspeech_new_request_id` and retain the returned UUID.
+2. Pass that UUID as `request_id` to generation with the intended text and voices.
+3. After a timeout or cancellation, call `flowspeech_get_job` with
+   `{"request_id":"YOUR_RETAINED_UUID"}`. If a job ID was already returned,
+   `{"job_id":"YOUR_JOB_UUID"}` is also supported.
+4. While queued, running, merging or settling, wait at least five seconds between
+   status calls. On success, use the existing `result.url` for a credential-free
+   download. Do not request another recording to retry a download.
+5. If lookup returns 404, retry the original generation with the same UUID and
+   unchanged text and voices. To retry local saving through MCP, replay that
+   same request with an unused output path; idempotency prevents new generation.
+
+Caller cancellation is passed to HTTP requests, response reads and polling waits.
+It never sends a server-side cancellation request. MCP clients may time out
+earlier than `FLOWSPEECH_TIMEOUT_MS` (the SDK default is 60 seconds); configure
+their timeout as appropriate. Cancelled MCP requests may not receive a final
+error response, which is why retaining the UUID **before submission** is required.
+A deleted success result has no downloadable audio. A terminal failed/cancelled
+job requires a new UUID only when intentionally requesting a new attempt.
 
 ## Development and tests
 
 ```sh
 npm ci --ignore-scripts
 npm test
-npm pack --dry-run
+npm run test:packed
 ```
 
-Tests cover mocked v1 contracts and a loopback HTTP server exercised through the built MCP stdio process. They do not call paid production generation. See [CHANGELOG.md](CHANGELOG.md) and the [public API documentation](https://flowspeech.io/docs/public-api).
+Tests cover mocked v1 contracts, real WAV fixtures and a loopback HTTP server
+exercised through the built MCP stdio process. Packed tests rebuild the tarball,
+inspect its members and credentials patterns, compare packaged bytes with local
+files, and rerun the client and stdio suites against the extracted package.
+They never call paid production generation. Node 20 and 22 CI run both suites.
+See [CHANGELOG.md](CHANGELOG.md) and the [public API documentation](https://flowspeech.io/docs/public-api).
 
 ## License
 

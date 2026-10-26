@@ -34,9 +34,10 @@
   "scripts": {
     "build": "tsc",
     "test": "npm run build && node --test test/*.test.mjs",
+    "test:packed": "npm run build && node scripts/test-packed.mjs",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
-    "prepublishOnly": "npm test"
+    "prepublishOnly": "npm test && npm run test:packed"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0"

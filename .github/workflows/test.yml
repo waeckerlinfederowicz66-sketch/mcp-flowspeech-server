@@ -18,4 +18,4 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm test
-      - run: npm pack --dry-run
+      - run: npm run test:packed
