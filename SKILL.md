@@ -21,7 +21,7 @@ FlowSpeech is a context-aware text-to-speech tool for human-like audio with emot
 Install or run the FlowSpeech MCP server:
 
 ```bash
-npx -y mcp-flowspeech-server
+npx -y mcp-flowspeech-server@0.2.0
 ```
 
 For MCP clients, configure the server with stdio transport:
@@ -31,7 +31,7 @@ For MCP clients, configure the server with stdio transport:
   "mcpServers": {
     "flowspeech": {
       "command": "npx",
-      "args": ["-y", "mcp-flowspeech-server"],
+      "args": ["-y", "mcp-flowspeech-server@0.2.0"],
       "env": {
         "FLOWSPEECH_OUTPUT_DIR": "~/flowspeech-audio"
       }
@@ -40,7 +40,7 @@ For MCP clients, configure the server with stdio transport:
 }
 ```
 
-Do not ask the user to paste secrets, account credentials, or private tokens into chat. If the user needs custom credentials for a private deployment, tell them to store those values in their local MCP client environment or secret manager.
+Node.js 20.3 or newer and a FlowSpeech developer API key are required. Set FLOWSPEECH_API_KEY in the private environment passed to the MCP process. Generation requires active paid API access and consumes account credits. Do not ask the user to paste secrets, account credentials, or private tokens into chat; use the MCP client's environment or secret manager.
 
 ## Workflow
 
@@ -49,6 +49,8 @@ Do not ask the user to paste secrets, account credentials, or private tokens int
 3. For single-speaker audio, call `flowspeech_tts` with the text and selected voice.
 4. For two-speaker audio, call `flowspeech_tts_multi` with `Speaker1:` and `Speaker2:` labels.
 5. Return the generated audio file path and briefly describe the voice choices used.
+
+The server uses API v1 job creation, polling and separate WAV download. It does not send credentials to the audio host. Use flowspeech_quota for available credits and flowspeech_get_job for an existing UUID job. On timeout, recover using the reported request/job ID instead of creating duplicate work. A request_id UUID can be supplied and reused only with identical text and voices. Local cancellation does not cancel the server job, and existing output files are not overwritten.
 
 ## Emotion And Pause Control
 

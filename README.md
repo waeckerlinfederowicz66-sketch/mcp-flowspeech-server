@@ -1,140 +1,78 @@
 # FlowSpeech MCP Server
 
-An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that brings [FlowSpeech](https://flowspeech.io) text-to-speech capabilities directly into your LLM workflows.
+Use [FlowSpeech](https://flowspeech.io) speech generation from an MCP client. Version 0.2.0 uses the public API v1: create a job, wait for completion, download the WAV, and save it locally.
 
-## What is FlowSpeech?
+## Requirements
 
-[FlowSpeech](https://flowspeech.io) is a context-aware text-to-speech tool that converts text into human-like audio with:
+- Node.js 20.3 or newer.
+- A FlowSpeech developer API key from [API settings](https://flowspeech.io/settings/apikeys).
+- Active paid Basic, Pro or Scale API access for generation. Trials do not include API access; generated speech consumes account credits.
 
-- 🎭 **Emotion control** — stage directions like `***(say cheerfully: Hello!)***`
-- ⏸️ **Pause control** — natural pacing and rhythm
-- 🎙️ **30+ voices** — male and female voices across moods and styles
-- 🌊 **Human-like output** — natural-sounding synthesis for creators, educators, and developers
-
-## Installation
-
-Run the MCP server directly with npx (no install needed):
-
-```bash
-npx mcp-flowspeech-server
-```
-
-Or install globally:
-
-```bash
-npm install -g mcp-flowspeech-server
-```
+Keep keys in your MCP client's local environment or secret manager, not in prompts or public configuration files.
 
 ## Configuration
 
-Add to your MCP client config (e.g. Claude Desktop `claude_desktop_config.json`):
+Set `FLOWSPEECH_API_KEY` in the environment used to launch your MCP client. A stdio configuration is:
 
 ```json
 {
   "mcpServers": {
     "flowspeech": {
       "command": "npx",
-      "args": ["-y", "mcp-flowspeech-server"],
-      "env": {
-        "FLOWSPEECH_OUTPUT_DIR": "~/flowspeech-audio"
-      }
+      "args": ["-y", "mcp-flowspeech-server@0.2.0"]
     }
   }
 }
 ```
 
-### Environment Variables
+The MCP client must pass the key to its child process. Clients which do not inherit environment variables need a private `env` entry or their own secret configuration.
 
-| Variable | Description | Default |
-|---|---|---|
-| `FLOWSPEECH_OUTPUT_DIR` | Directory to save generated audio files | `~/.flowspeech-mcp/audio` |
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `FLOWSPEECH_API_KEY` | Required developer key | None |
+| `FLOWSPEECH_OUTPUT_DIR` | Local output directory; `~/` is expanded | `~/.flowspeech-mcp/audio` |
+| `FLOWSPEECH_TIMEOUT_MS` | Total operation deadline, at most 7200000 ms | `120000` |
+| `FLOWSPEECH_BASE_URL` | Trusted API origin; never use an untrusted key recipient | `https://flowspeech.io` |
+
+HTTP is allowed only for loopback test servers. Audio downloads never include the API key. Redirects are rejected, and audio downloads are limited to 100 MiB.
 
 ## Tools
 
-### `flowspeech_tts`
+| Tool | Arguments | Result |
+| --- | --- | --- |
+| `flowspeech_tts` | Required `text`; optional `voice` (Kore), `output_path`, `request_id` | Local WAV path, job ID, request ID and usage |
+| `flowspeech_tts_multi` | Required labelled `text`; optional `voice_a` (Charon), `voice_b` (Kore), `output_path`, `request_id` | Local WAV path and recovery IDs |
+| `flowspeech_list_voices` | Optional `gender`: male, female or all | Current authenticated voice catalog |
+| `flowspeech_quota` | None | Available, remaining and reserved credits |
+| `flowspeech_get_job` | Required UUID `job_id` | Current job status and result |
 
-Convert text to speech with a single voice.
+Two-speaker input uses one label per turn. Continuation lines belong to the preceding speaker:
 
-**Parameters:**
-
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `text` | string | ✅ | Text to synthesize. Supports emotion stage directions. |
-| `voice` | string | | Voice name (default: `Kore`) |
-| `output_path` | string | | Custom file path for the output audio |
-
-**Example:**
-
-```
-Convert this to audio with a cheerful tone using the Puck voice:
-"***(say cheerfully: Good morning, everyone!)*** Today we're going to explore something amazing."
+```text
+Speaker1: Welcome.[pause:2s]Let's begin.
+Speaker2: Thanks for inviting me.
+Speaker1: What should we cover first?
 ```
 
-### `flowspeech_tts_multi`
+Output is 24 kHz, mono, 16-bit WAV. Existing output files are never overwritten. Anyone holding a result URL can download it, so keep job results and recordings private when appropriate.
 
-Convert a two-speaker dialogue to speech.
+## Recovery and migration
 
-**Parameters:**
+Version 0.1.0 called the retired synchronous endpoint. Upgrade the npm package and restart your MCP client. All tools now require a developer key, including voice listing. The three original tool names remain available, and two read-only tools have been added.
 
-| Name | Type | Required | Description |
-|---|---|---|---|
-| `text` | string | ✅ | Dialogue with `Speaker1:` and `Speaker2:` prefixes |
-| `voice_a` | string | | Voice for Speaker1 (default: `Charon`) |
-| `voice_b` | string | | Voice for Speaker2 (default: `Kore`) |
-| `output_path` | string | | Custom file path for the output audio |
+The server submits `{ "input": ... }` with a UUID idempotency key, polls no faster than five seconds, honors a longer `Retry-After`, and downloads `result.url`. It does not expect an API Base64 response. Transient API retries preserve the exact request ID and body, with at most five attempts per API request.
 
-**Example:**
+For deliberate recovery, supply a UUID `request_id` and reuse it with unchanged text and voices. Errors include available recovery IDs. A timeout or client cancellation stops local waiting; it does not cancel a server-side job. Use `flowspeech_get_job` to inspect it. A failed download or local save should be retried from the existing result rather than starting another recording. A terminal failed/cancelled job requires a new UUID only when intentionally requesting a new attempt.
 
-```
-Speaker1: Welcome to the show! I'm your host.
-Speaker2: And I'm your co-host. Great to be here!
-Speaker1: Today we're talking about AI voices.
+## Development and tests
+
+```sh
+npm ci --ignore-scripts
+npm test
+npm pack --dry-run
 ```
 
-### `flowspeech_list_voices`
-
-List all available voices.
-
-**Parameters:**
-
-| Name | Type | Description |
-|---|---|---|
-| `gender` | `male` \| `female` \| `all` | Filter by gender (default: `all`) |
-
-## Available Voices
-
-| Voice | Gender | Style |
-|---|---|---|
-| Puck | Male | Upbeat and playful |
-| Fenrir | Male | Excitable and energetic |
-| Zephyr | Female | Bright and cheerful |
-| Autonoe | Female | Bright and welcoming |
-| Charon | Male | Informative and narrative |
-| Kore | Female | Firm and focused |
-| Orus | Male | Firm and decisive |
-| Iapetus | Male | Clear and professional |
-| Umbriel | Male | Easy-going and relaxed |
-| Callirrhoe | Female | Easy-going and soothing |
-| Sulafat | Female | Warm and inviting |
-| Achernar | Female | Soft and tender |
-| Gacrux | Female | Mature and experienced |
-| … | … | 30+ total — use `flowspeech_list_voices` to see all |
-
-## Emotion Stage Directions
-
-FlowSpeech supports inline emotion control using the format `***(say <style>: text)***`:
-
-```
-***(say cheerfully: Good morning!)*** 
-Today I want to talk about something important.
-***(say solemnly: This affects all of us.)***
-```
-
-## Links
-
-- 🌐 Website: [https://flowspeech.io](https://flowspeech.io)
-- 🎬 Demo: [https://youtu.be/nkBI7WbggW8](https://youtu.be/nkBI7WbggW8)
-- 📦 npm: [https://www.npmjs.com/package/mcp-flowspeech-server](https://www.npmjs.com/package/mcp-flowspeech-server)
+Tests cover mocked v1 contracts and a loopback HTTP server exercised through the built MCP stdio process. They do not call paid production generation. See [CHANGELOG.md](CHANGELOG.md) and the [public API documentation](https://flowspeech.io/docs/public-api).
 
 ## License
 

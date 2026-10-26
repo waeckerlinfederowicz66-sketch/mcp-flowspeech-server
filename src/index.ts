@@ -1,281 +1,83 @@
 #!/usr/bin/env node
-
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-  Tool,
-} from '@modelcontextprotocol/sdk/types.js';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
+import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import { FlowSpeechClient, dialogueInput } from './client.js';
 
-const FLOWSPEECH_API = 'https://flowspeech.io/api/ai/text-to-speech';
-const DEFAULT_OUTPUT_DIR = process.env.FLOWSPEECH_OUTPUT_DIR
-  || path.join(os.homedir(), '.flowspeech-mcp', 'audio');
-
-const VOICES = [
-  // Bright & Energetic
-  { name: 'Puck',        description: 'Upbeat and playful',          gender: 'male'   },
-  { name: 'Fenrir',      description: 'Excitable and energetic',      gender: 'male'   },
-  { name: 'Zephyr',      description: 'Bright and cheerful',          gender: 'female' },
-  { name: 'Autonoe',     description: 'Bright and welcoming',         gender: 'female' },
-  { name: 'Laomedeia',   description: 'Upbeat and lively',            gender: 'female' },
-  { name: 'Sadachbia',   description: 'Lively and colorful',          gender: 'male'   },
-  { name: 'Leda',        description: 'Youthful and casual',          gender: 'female' },
-  { name: 'Aoede',       description: 'Breezy and light',             gender: 'female' },
-  // Clear & Informative
-  { name: 'Charon',      description: 'Informative and narrative',    gender: 'male'   },
-  { name: 'Rasalgethi',  description: 'Informative and educational',  gender: 'male'   },
-  { name: 'Kore',        description: 'Firm and focused',             gender: 'female' },
-  { name: 'Orus',        description: 'Firm and decisive',            gender: 'male'   },
-  { name: 'Alnilam',     description: 'Firm and authoritative',       gender: 'male'   },
-  { name: 'Erinome',     description: 'Clear and precise',            gender: 'female' },
-  { name: 'Iapetus',     description: 'Clear and professional',       gender: 'male'   },
-  { name: 'Schedar',     description: 'Even and steady',              gender: 'male'   },
-  { name: 'Pulcherrima', description: 'Forward and direct',           gender: 'male'   },
-  { name: 'Sadaltager',  description: 'Knowledgeable and informative',gender: 'male'   },
-  // Calm & Relaxed
-  { name: 'Umbriel',       description: 'Easy-going and relaxed',    gender: 'male'   },
-  { name: 'Callirrhoe',    description: 'Easy-going and soothing',   gender: 'female' },
-  { name: 'Achird',        description: 'Friendly and helpful',      gender: 'male'   },
-  { name: 'Zubenelgenubi', description: 'Casual and laid-back',      gender: 'male'   },
-  { name: 'Algieba',       description: 'Smooth and mellow',         gender: 'male'   },
-  { name: 'Despina',       description: 'Smooth and reassuring',     gender: 'female' },
-  // Warm & Distinctive
-  { name: 'Enceladus',   description: 'Breathy and magnetic',        gender: 'male'   },
-  { name: 'Algenib',     description: 'Gravelly and textured',       gender: 'male'   },
-  { name: 'Sulafat',     description: 'Warm and inviting',           gender: 'female' },
-  { name: 'Vindemiatrix',description: 'Gentle and caring',           gender: 'female' },
-  { name: 'Achernar',    description: 'Soft and tender',             gender: 'female' },
-  { name: 'Gacrux',      description: 'Mature and experienced',      gender: 'female' },
-];
-
-function ensureOutputDir(dir: string): void {
-  fs.mkdirSync(dir, { recursive: true });
+const VERSION = '0.2.0';
+const outputDirectory = expandHome(process.env.FLOWSPEECH_OUTPUT_DIR || '~/.flowspeech-mcp/audio');
+function expandHome(value: string): string {
+  return value === '~' ? os.homedir() : value.startsWith('~/') ? path.join(os.homedir(), value.slice(2)) : path.resolve(value);
 }
-
-interface TtsApiResponse {
-  code: number;
-  message?: string;
-  data?: {
-    mimeType: string;
-    audioBase64: string;
-    sampleRate: number;
-    numChannels: number;
-    bitsPerSample: number;
-    quota?: unknown;
-  };
+function stringArg(args: Record<string, unknown>, key: string, fallback?: string): string {
+  const value = args[key] ?? fallback;
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`${key} must be a nonempty string`);
+  return value;
 }
-
-async function callFlowSpeechTts(
-  text: string,
-  voiceName: string = 'Kore',
-  speakerB?: string,
-): Promise<TtsApiResponse> {
-  let speakers: Array<{ voiceName: string; speaker?: string }>;
-
-  if (speakerB) {
-    // Multi-speaker mode: mark text with Speaker1/Speaker2
-    speakers = [
-      { speaker: 'Speaker1', voiceName },
-      { speaker: 'Speaker2', voiceName: speakerB },
-    ];
-  } else {
-    speakers = [{ voiceName }];
-  }
-
-  const response = await fetch(FLOWSPEECH_API, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, speakers }),
+function client(): FlowSpeechClient {
+  return new FlowSpeechClient({
+    apiKey: process.env.FLOWSPEECH_API_KEY || '', baseUrl: process.env.FLOWSPEECH_BASE_URL,
+    timeoutMs: process.env.FLOWSPEECH_TIMEOUT_MS ? Number(process.env.FLOWSPEECH_TIMEOUT_MS) : undefined,
   });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`FlowSpeech API error (${response.status}): ${errorText}`);
-  }
-
-  return response.json() as Promise<TtsApiResponse>;
 }
-
-function base64ToBuffer(base64: string): Buffer {
-  return Buffer.from(base64, 'base64');
-}
-
-function getMimeExtension(mimeType: string): string {
-  if (mimeType.includes('wav') || mimeType.includes('L16') || mimeType.includes('l16')) return 'wav';
-  if (mimeType.includes('mp3') || mimeType.includes('mpeg')) return 'mp3';
-  if (mimeType.includes('ogg')) return 'ogg';
-  if (mimeType.includes('flac')) return 'flac';
-  return 'wav';
-}
-
-const TOOLS: Tool[] = [
-  {
-    name: 'flowspeech_tts',
-    description:
-      'Convert text to speech using FlowSpeech — a context-aware TTS engine with emotion control and 30+ voices. Returns the file path of the generated audio.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        text: {
-          type: 'string',
-          description: 'Text to convert to speech. Supports emotion stage directions inside ***(say <style>: text)***: e.g. "***(say cheerfully: Hello!)***"',
-        },
-        voice: {
-          type: 'string',
-          description: `Voice name to use. Default: "Kore". Available: ${VOICES.map((v) => v.name).join(', ')}`,
-          default: 'Kore',
-        },
-        output_path: {
-          type: 'string',
-          description: `File path to save audio. Defaults to a timestamped file in ${DEFAULT_OUTPUT_DIR}`,
-        },
-      },
-      required: ['text'],
-    },
-  },
-  {
-    name: 'flowspeech_tts_multi',
-    description:
-      'Convert a two-speaker dialogue to speech using FlowSpeech. Assign **Speaker1:** and **Speaker2:** prefixes in the text.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        text: {
-          type: 'string',
-          description:
-            'Dialogue text with speaker labels. Example:\n"Speaker1: Good morning!\nSpeaker2: Good morning! How are you?"',
-        },
-        voice_a: {
-          type: 'string',
-          description: 'Voice for Speaker1. Default: "Charon"',
-          default: 'Charon',
-        },
-        voice_b: {
-          type: 'string',
-          description: 'Voice for Speaker2. Default: "Kore"',
-          default: 'Kore',
-        },
-        output_path: {
-          type: 'string',
-          description: `File path to save audio. Defaults to a timestamped file in ${DEFAULT_OUTPUT_DIR}`,
-        },
-      },
-      required: ['text'],
-    },
-  },
-  {
-    name: 'flowspeech_list_voices',
-    description: 'List all available FlowSpeech voices with their descriptions and gender.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        gender: {
-          type: 'string',
-          enum: ['male', 'female', 'all'],
-          description: 'Filter by gender. Default: "all"',
-          default: 'all',
-        },
-      },
-    },
-  },
+const outputProperties = {
+  output_path: { type: 'string', description: 'Optional output WAV file path. An existing file is not overwritten.' },
+  request_id: { type: 'string', description: 'Optional UUID for retrying the same text and voice without creating duplicate work.' },
+};
+const tools: Tool[] = [
+  { name: 'flowspeech_tts', description: 'Generate a WAV recording with FlowSpeech. Requires an API key and paid API access; consumes account credits.', inputSchema: {
+    type: 'object', properties: { text: { type: 'string' }, voice: { type: 'string', default: 'Kore' }, ...outputProperties }, required: ['text'],
+  } },
+  { name: 'flowspeech_tts_multi', description: 'Generate a two-speaker WAV recording. Each turn starts with Speaker1: or Speaker2:. Consumes account credits.', inputSchema: {
+    type: 'object', properties: { text: { type: 'string' }, voice_a: { type: 'string', default: 'Charon' }, voice_b: { type: 'string', default: 'Kore' }, ...outputProperties }, required: ['text'],
+  } },
+  { name: 'flowspeech_list_voices', description: 'Retrieve the current voice catalog from FlowSpeech.', inputSchema: {
+    type: 'object', properties: { gender: { type: 'string', enum: ['male', 'female', 'all'], default: 'all' } },
+  } },
+  { name: 'flowspeech_quota', description: 'Read available, remaining and reserved API credits.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'flowspeech_get_job', description: 'Read an existing job by UUID without creating a new recording.', inputSchema: {
+    type: 'object', properties: { job_id: { type: 'string' } }, required: ['job_id'],
+  } },
 ];
-
-const server = new Server(
-  { name: 'flowspeech', version: '0.1.0' },
-  { capabilities: { tools: {} } },
-);
-
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
-
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+const server = new Server({ name: 'flowspeech', version: VERSION }, { capabilities: { tools: {} } });
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const { name, arguments: args = {} } = request.params;
-
-  if (name === 'flowspeech_list_voices') {
-    const gender = (args.gender as string) || 'all';
-    const filtered = gender === 'all'
-      ? VOICES
-      : VOICES.filter((v) => v.gender === gender);
-
-    const rows = filtered.map(
-      (v) => `• **${v.name}** (${v.gender}) — ${v.description}`,
-    );
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `FlowSpeech has ${filtered.length} voice(s):\n\n${rows.join('\n')}\n\nLearn more: https://flowspeech.io`,
-        },
-      ],
-    };
+  try {
+    const api = client();
+    let text: string;
+    if (name === 'flowspeech_list_voices') {
+      const gender = stringArg(args, 'gender', 'all');
+      if (!['male', 'female', 'all'].includes(gender)) throw new Error('Invalid gender filter');
+      text = JSON.stringify((await api.voices(extra.signal)).filter(v => gender === 'all' || v.gender === gender), null, 2);
+    } else if (name === 'flowspeech_quota') {
+      text = JSON.stringify(await api.quota(extra.signal), null, 2);
+    } else if (name === 'flowspeech_get_job') {
+      text = JSON.stringify(await api.getJob(stringArg(args, 'job_id'), extra.signal), null, 2);
+    } else if (name === 'flowspeech_tts' || name === 'flowspeech_tts_multi') {
+      const script = stringArg(args, 'text');
+      const input = name === 'flowspeech_tts'
+        ? { mode: 'single' as const, text: script, voiceName: stringArg(args, 'voice', 'Kore') }
+        : dialogueInput(script, stringArg(args, 'voice_a', 'Charon'), stringArg(args, 'voice_b', 'Kore'));
+      const requestId = args.request_id === undefined ? undefined : stringArg(args, 'request_id');
+      const result = await api.generate(input, requestId, extra.signal);
+      const file = args.output_path === undefined
+        ? path.join(outputDirectory, `flowspeech-${result.job.id}.wav`)
+        : expandHome(stringArg(args, 'output_path'));
+      try {
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeFile(file, result.audio, { flag: 'wx', mode: 0o600 });
+      } catch {
+        throw new Error(`Cannot save audio without overwriting an existing file. Retrieve jobId=${result.job.id}; requestId=${result.requestId}. Do not create another recording.`);
+      }
+      text = `Audio saved to: ${file}\nFormat: audio/wav\nJob ID: ${result.job.id}\nRequest ID: ${result.requestId}\nUsage: ${JSON.stringify(result.job.usage ?? {})}`;
+    } else throw new Error(`Unknown tool: ${name}`);
+    return { content: [{ type: 'text', text }] };
+  } catch (error) {
+    return { isError: true, content: [{ type: 'text', text: error instanceof Error ? error.message : 'FlowSpeech operation failed' }] };
   }
-
-  if (name === 'flowspeech_tts') {
-    const text = args.text as string;
-    const voice = (args.voice as string) || 'Kore';
-    const outputPath = (args.output_path as string) || null;
-
-    if (!text) throw new Error('text is required');
-
-    const result = await callFlowSpeechTts(text, voice);
-    if (result.code !== 0 || !result.data?.audioBase64) {
-      throw new Error(result.message || 'FlowSpeech TTS failed');
-    }
-
-    const ext = getMimeExtension(result.data.mimeType);
-    const outDir = outputPath
-      ? path.dirname(outputPath)
-      : DEFAULT_OUTPUT_DIR;
-    ensureOutputDir(outDir);
-
-    const filePath = outputPath || path.join(DEFAULT_OUTPUT_DIR, `flowspeech-${Date.now()}.${ext}`);
-    fs.writeFileSync(filePath, base64ToBuffer(result.data.audioBase64));
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Audio saved to: ${filePath}\nVoice: ${voice}\nFormat: ${result.data.mimeType}\nPowered by FlowSpeech (https://flowspeech.io)`,
-        },
-      ],
-    };
-  }
-
-  if (name === 'flowspeech_tts_multi') {
-    const text = args.text as string;
-    const voiceA = (args.voice_a as string) || 'Charon';
-    const voiceB = (args.voice_b as string) || 'Kore';
-    const outputPath = (args.output_path as string) || null;
-
-    if (!text) throw new Error('text is required');
-
-    const result = await callFlowSpeechTts(text, voiceA, voiceB);
-    if (result.code !== 0 || !result.data?.audioBase64) {
-      throw new Error(result.message || 'FlowSpeech multi-speaker TTS failed');
-    }
-
-    const ext = getMimeExtension(result.data.mimeType);
-    const outDir = outputPath ? path.dirname(outputPath) : DEFAULT_OUTPUT_DIR;
-    ensureOutputDir(outDir);
-
-    const filePath = outputPath || path.join(DEFAULT_OUTPUT_DIR, `flowspeech-multi-${Date.now()}.${ext}`);
-    fs.writeFileSync(filePath, base64ToBuffer(result.data.audioBase64));
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Audio saved to: ${filePath}\nSpeaker1: ${voiceA} | Speaker2: ${voiceB}\nFormat: ${result.data.mimeType}\nPowered by FlowSpeech (https://flowspeech.io)`,
-        },
-      ],
-    };
-  }
-
-  throw new Error(`Unknown tool: ${name}`);
 });
-
-const transport = new StdioServerTransport();
-await server.connect(transport);
+await server.connect(new StdioServerTransport());

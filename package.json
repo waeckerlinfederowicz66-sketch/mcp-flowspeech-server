@@ -1,7 +1,7 @@
 {
   "name": "mcp-flowspeech-server",
-  "version": "0.1.0",
-  "description": "MCP server for FlowSpeech — context-aware text-to-speech with emotion control, pause control, and 30+ voices",
+  "version": "0.2.0",
+  "description": "MCP server for the FlowSpeech public API with asynchronous speech jobs, voice discovery and quota checks",
   "keywords": [
     "mcp",
     "mcp-server",
@@ -10,13 +10,15 @@
     "flowspeech",
     "ai",
     "voice",
-    "speech-synthesis",
-    "n8n-community-node-package"
+    "speech-synthesis"
   ],
   "homepage": "https://flowspeech.io",
   "repository": {
     "type": "git",
-    "url": "https://github.com/waeckerlinfederowicz66-sketch/mcp-flowspeech-server"
+    "url": "git+https://github.com/waeckerlinfederowicz66-sketch/mcp-flowspeech-server.git"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "license": "MIT",
   "type": "module",
@@ -25,13 +27,16 @@
     "mcp-flowspeech-server": "dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md",
+    "SKILL.md"
   ],
   "scripts": {
     "build": "tsc",
+    "test": "npm run build && node --test test/*.test.mjs",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0"
@@ -41,6 +46,6 @@
     "typescript": "^5.0.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20.3"
   }
 }
