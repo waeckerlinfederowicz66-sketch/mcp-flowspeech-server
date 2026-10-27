@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 - 2026-10-27
+
+- Filter reflected credentials and unknown diagnostic fields on read-only tools and terminal-job errors.
+- Preserve validated request/job identifiers and existing recovery behavior.
+- Restrict published files and verify clean directory-publish metadata before release.
+
 ## 0.2.0
 
 - Breaking: require a caller-known request_id on both generation tools and the client generate method.

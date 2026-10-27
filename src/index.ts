@@ -9,7 +9,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { FlowSpeechClient, dialogueInput, validateId } from './client.js';
 
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 function expandHome(value: string): string {
   return value === '~' ? os.homedir() : value.startsWith('~/') ? path.join(os.homedir(), value.slice(2)) : path.resolve(value);
 }

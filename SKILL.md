@@ -21,7 +21,7 @@ FlowSpeech is a context-aware text-to-speech tool for human-like audio with emot
 Install or run the FlowSpeech MCP server:
 
 ```bash
-npx -y mcp-flowspeech-server@0.2.0
+npx -y mcp-flowspeech-server@0.2.1
 ```
 
 For MCP clients, configure the server with stdio transport:
@@ -31,7 +31,7 @@ For MCP clients, configure the server with stdio transport:
   "mcpServers": {
     "flowspeech": {
       "command": "npx",
-      "args": ["-y", "mcp-flowspeech-server@0.2.0"],
+      "args": ["-y", "mcp-flowspeech-server@0.2.1"],
       "env": {
         "FLOWSPEECH_OUTPUT_DIR": "~/flowspeech-audio"
       }

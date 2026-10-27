@@ -1,6 +1,6 @@
 {
   "name": "mcp-flowspeech-server",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "MCP server for the FlowSpeech public API with asynchronous speech jobs, voice discovery and quota checks",
   "keywords": [
     "mcp",

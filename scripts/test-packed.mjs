@@ -13,7 +13,7 @@ const destination = path.resolve(process.env.FLOWSPEECH_PACK_DESTINATION ?? root
 await mkdir(destination, { recursive: true });
 const packed = JSON.parse(execFileSync(process.execPath, [npmCli, 'pack', '--ignore-scripts', '--json', '--pack-destination', destination], { cwd: root, env, encoding: 'utf8' }));
 assert.equal(packed.length, 1);
-assert.equal(packed[0].version, '0.2.0');
+assert.equal(packed[0].version, '0.2.1');
 const archive = path.join(destination, packed[0].filename);
 const expected = [
   'LICENSE', 'dist/client.js', 'dist/index.js', 'package.json', 'CHANGELOG.md',
@@ -37,7 +37,7 @@ try {
   const target = path.join(directory, 'package');
   const manifest = JSON.parse(await readFile(path.join(target, 'package.json'), 'utf8'));
   assert.equal(manifest.bin['mcp-flowspeech-server'], 'dist/index.js');
-  assert.equal(manifest.version, '0.2.0');
+  assert.equal(manifest.version, '0.2.1');
   assert.ok((await readFile(path.join(target, manifest.bin['mcp-flowspeech-server']), 'utf8')).startsWith('#!/usr/bin/env node'));
   // Dependencies resolve from the existing workspace install; implementation imports
   // and the child stdio process both use only the extracted package's dist files.
