@@ -1,5 +1,9 @@
 # FlowSpeech MCP Server
 
+## Unreleased Security Follow-up
+
+Read-only tools and returned job errors reject the configured API key in diagnostic codes. Returned job errors contain only the validated code, not remote messages or extra fields. Recovery IDs and successful result links remain available.
+
 Use [FlowSpeech](https://flowspeech.io) speech generation from an MCP client. Version 0.2.0 uses the public API v1: create a job, wait for completion, download the WAV, and save it locally.
 
 ## Requirements

@@ -1,5 +1,8 @@
 # 0.2.0 hardening handoff (2026-10-26)
 
+Historical runtime handoff. The subsequent local publication-privacy guard is
+documented in RELEASE_PRIVACY.md; it does not repair published 0.2.0 metadata.
+
 Base: `7a40afe` on `codex/public-api-v1`. No commits, pushes, publishes,
 production requests, real credentials, or Raycast edits were made.
 
@@ -56,7 +59,8 @@ remain 0.2.0; dependencies were not changed.
 ## Coordinator release steps
 
 Review the diff, run Node 20/22 CI, then commit/push from the coordinator.
-Verify npm 0.2.0 is still unpublished before publishing this exact tarball with
-the coordinator's authorized 2FA flow. Do not overwrite an existing release.
+For future publication follow RELEASE_PRIVACY.md: select a new unpublished
+version, verify its staged directory metadata, and publish that directory rather
+than a tarball path. Do not overwrite 0.2.0 or any existing release.
 No implementation blocker remains from the six findings; publication and the
 new remote CI run remain coordinator actions.

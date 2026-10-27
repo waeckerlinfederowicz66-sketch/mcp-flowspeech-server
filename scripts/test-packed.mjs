@@ -9,10 +9,12 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const env = { ...process.env, npm_config_cache: path.join(root, '.npm-cache'), LC_ALL: 'C' };
 const npmCli = process.env.npm_execpath;
 assert.ok(npmCli, 'Run this check through npm run test:packed');
-const packed = JSON.parse(execFileSync(process.execPath, [npmCli, 'pack', '--ignore-scripts', '--json'], { cwd: root, env, encoding: 'utf8' }));
+const destination = path.resolve(process.env.FLOWSPEECH_PACK_DESTINATION ?? root);
+await mkdir(destination, { recursive: true });
+const packed = JSON.parse(execFileSync(process.execPath, [npmCli, 'pack', '--ignore-scripts', '--json', '--pack-destination', destination], { cwd: root, env, encoding: 'utf8' }));
 assert.equal(packed.length, 1);
 assert.equal(packed[0].version, '0.2.0');
-const archive = path.join(root, packed[0].filename);
+const archive = path.join(destination, packed[0].filename);
 const expected = [
   'LICENSE', 'dist/client.js', 'dist/index.js', 'package.json', 'CHANGELOG.md',
   'README.md', 'SKILL.md', 'dist/client.d.ts', 'dist/index.d.ts',
@@ -39,7 +41,7 @@ try {
   assert.ok((await readFile(path.join(target, manifest.bin['mcp-flowspeech-server']), 'utf8')).startsWith('#!/usr/bin/env node'));
   // Dependencies resolve from the existing workspace install; implementation imports
   // and the child stdio process both use only the extracted package's dist files.
-  const result = spawnSync(process.execPath, ['--test', 'test/client.test.mjs', 'test/stdio.test.mjs'], {
+  const result = spawnSync(process.execPath, ['--test', 'test/client.test.mjs', 'test/error-privacy.test.mjs', 'test/stdio.test.mjs'], {
     cwd: root, env: { ...env, FLOWSPEECH_TEST_PACKAGE: target }, stdio: 'inherit',
   });
   assert.equal(result.status, 0, 'Packed client/stdio regression suite failed');

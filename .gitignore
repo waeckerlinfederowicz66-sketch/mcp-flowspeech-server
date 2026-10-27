@@ -1,4 +1,5 @@
 node_modules/
+.release-stage/
 dist/
 *.js.map
 .env

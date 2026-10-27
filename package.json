@@ -27,7 +27,10 @@
     "mcp-flowspeech-server": "dist/index.js"
   },
   "files": [
-    "dist",
+    "dist/*.js",
+    "dist/*.d.ts",
+    "dist/*.js.map",
+    "dist/*.d.ts.map",
     "CHANGELOG.md",
     "SKILL.md"
   ],

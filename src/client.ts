@@ -241,10 +241,14 @@ export class FlowSpeechClient {
         await this.pause(retryDelay(response.headers, fallback), context);
         continue;
       }
-      const code = typeof error.code === 'string' && /^[a-zA-Z0-9_]{1,100}$/.test(error.code) ? error.code : 'api_error';
+      const code = this.errorCode(error.code);
       throw new Error(`FlowSpeech HTTP ${response.status}: ${code}`);
     }
     throw new Error('API retry budget exhausted');
+  }
+  private errorCode(value: unknown): string {
+    return typeof value === 'string' && value.length > 0 && value.length <= 100 && !/[^a-zA-Z0-9_]/.test(value) &&
+      !value.includes(this.options.apiKey) ? value : 'api_error';
   }
   private job(data: Record<string, unknown>, expected: { jobId?: string; requestId?: string }): Job {
     const id = validateId(data.id), requestId = validateId(data.requestId);
@@ -270,7 +274,22 @@ export class FlowSpeechClient {
       const error = object(data.error);
       if (typeof error.code !== 'string' || !/^[a-zA-Z0-9_]{1,100}$/.test(error.code)) throw new InvalidResponse('Invalid job error code');
     }
-    return { ...data, id, requestId } as unknown as Job;
+    const metadata: Record<string, unknown> = {};
+    for (const name of ['createdAt', 'updatedAt', 'deadlineAt']) {
+      const value = data[name];
+      if (typeof value === 'string' && value.length === 24 && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) && Number.isFinite(Date.parse(value))) metadata[name] = value;
+    }
+    if (data.progress && typeof data.progress === 'object') {
+      const progress = data.progress as Record<string, unknown>;
+      if (counter(progress.completed) && counter(progress.total)) metadata.progress = { completed: progress.completed, total: progress.total };
+    }
+    return {
+      ...metadata,
+      id, requestId, status: data.status, usage,
+      ...(data.result !== undefined ? { result: data.result } : {}),
+      ...(data.resultDeleted !== undefined ? { resultDeleted: data.resultDeleted } : {}),
+      ...(data.error !== undefined ? { error: { code: this.errorCode(object(data.error).code) } } : {}),
+    } as unknown as Job;
   }
   async quota(signal?: AbortSignal): Promise<Record<string, unknown>> {
     const data = (await this.api('/api/v1/quota', this.context(signal))).data;

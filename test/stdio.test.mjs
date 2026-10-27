@@ -11,7 +11,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { id, requestId, wav, job, packageRoot } from './fixtures.mjs';
 
 const workspace = fileURLToPath(new URL('..', import.meta.url));
-async function setup(t, { queued = false, noKey = false, audio = wav, onCreate } = {}) {
+async function setup(t, { queued = false, noKey = false, audio = wav, onCreate, reflectedError = false, apiKey = 'fake-test-key' } = {}) {
   const scratch = path.join(workspace, '.test-tmp');
   await mkdir(scratch, { recursive: true });
   const directory = await mkdtemp(path.join(scratch, 'stdio-'));
@@ -23,8 +23,12 @@ async function setup(t, { queued = false, noKey = false, audio = wav, onCreate }
       for await (const chunk of req) body += chunk;
       requests.push({ path: req.url, method: req.method, auth: req.headers.authorization, key: req.headers['idempotency-key'], body });
       if (req.url === '/audio.wav') { res.end(audio); return; }
-      assert.equal(req.headers.authorization, 'Bearer fake-test-key');
+      assert.equal(req.headers.authorization, 'Bearer ' + apiKey);
       res.setHeader('Content-Type', 'application/json');
+      if (reflectedError) {
+        res.writeHead(403).end(JSON.stringify({ error: { code: apiKey, message: apiKey, retryable: false } }));
+        return;
+      }
       if (req.url === '/api/v1/voices') {
         res.end(JSON.stringify({ voices: [{ name: 'Kore', gender: 'female', description: 'Firm' }] })); return;
       }
@@ -74,12 +78,24 @@ async function setup(t, { queued = false, noKey = false, audio = wav, onCreate }
   });
   await client.connect(new StdioClientTransport({
     command: process.execPath, args: [path.join(packageRoot, 'dist/index.js')],
-    env: { FLOWSPEECH_API_KEY: noKey ? '' : 'fake-test-key', FLOWSPEECH_BASE_URL: baseUrl, FLOWSPEECH_OUTPUT_DIR: directory },
+    env: { FLOWSPEECH_API_KEY: noKey ? '' : apiKey, FLOWSPEECH_BASE_URL: baseUrl, FLOWSPEECH_OUTPUT_DIR: directory },
   }));
   return { client, directory, requests, jobs, events, baseUrl };
 }
 const call = (client, name, args = {}, options) => client.callTool({ name, arguments: args }, undefined, options);
 const content = response => response.content[0].text;
+
+test('read-only tool error output excludes reflected credentials', async t => {
+  const { client } = await setup(t, { reflectedError: true, apiKey: 'fake_test_key' });
+  for (const [name, args] of [
+    ['flowspeech_quota', {}], ['flowspeech_list_voices', {}],
+    ['flowspeech_get_job', { jobId: id }],
+  ]) {
+    const response = await call(client, name, args);
+    assert.equal(response.isError, true);
+    assert.ok(!JSON.stringify(response).includes('fake_test_key'));
+  }
+});
 
 test('six strict tool schemas retain the existing names and require generation UUIDs', async t => {
   const { client } = await setup(t);
