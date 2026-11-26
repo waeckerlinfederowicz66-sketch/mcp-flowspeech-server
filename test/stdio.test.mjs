@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once, EventEmitter } from 'node:events';
-import { mkdtemp, readFile, rm, mkdir, writeFile, readdir, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, mkdir, writeFile, readdir, stat, symlink } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -11,7 +11,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { id, requestId, wav, job, packageRoot } from './fixtures.mjs';
 
 const workspace = fileURLToPath(new URL('..', import.meta.url));
-async function setup(t, { queued = false, noKey = false, audio = wav, onCreate, reflectedError = false, apiKey = 'fake-test-key' } = {}) {
+async function setup(t, { queued = false, noKey = false, audio = wav, onCreate, reflectedError = false, apiKey = 'fake-test-key', noHardLinks = false } = {}) {
   const scratch = path.join(workspace, '.test-tmp');
   await mkdir(scratch, { recursive: true });
   const directory = await mkdtemp(path.join(scratch, 'stdio-'));
@@ -38,13 +38,15 @@ async function setup(t, { queued = false, noKey = false, audio = wav, onCreate, 
       if (req.url === '/api/v1/tts/jobs' && req.method === 'POST') {
         const key = req.headers['idempotency-key'];
         assert.match(key, /^[0-9a-f-]{36}$/);
-        const response = job(queued ? 'queued' : 'success', {
-          requestId: key,
-          ...(queued ? {} : { result: { ...job().result, url: baseUrl + '/audio.wav' } }),
-        });
-        jobs.set(key, response);
-        await onCreate?.(JSON.parse(body), directory);
-        res.writeHead(202).end(JSON.stringify(response));
+        if (!jobs.has(key)) {
+          jobs.set(key, job(queued ? 'queued' : 'success', {
+            requestId: key,
+            ...(queued ? {} : { result: { ...job().result, url: baseUrl + '/audio.wav' } }),
+          }));
+          await onCreate?.(JSON.parse(body), directory);
+        }
+        const response = jobs.get(key);
+        res.writeHead(202, { 'Retry-After': '5' }).end(JSON.stringify(response));
         events.emit('accepted');
         return;
       }
@@ -57,6 +59,15 @@ async function setup(t, { queued = false, noKey = false, audio = wav, onCreate, 
         const response = [...jobs.values()][0] || job();
         res.end(JSON.stringify(response)); return;
       }
+      if (req.url === `/api/v1/tts/jobs/${id}/cancel` && req.method === 'POST') {
+        const current = [...jobs.values()][0];
+        if (current?.status === 'success') {
+          res.writeHead(409).end(JSON.stringify({ error: { code: 'job_already_completed' } })); return;
+        }
+        const stopped = job('cancelled', { requestId: current.requestId });
+        jobs.set(current.requestId, stopped);
+        res.end(JSON.stringify(stopped)); return;
+      }
       res.writeHead(404).end(JSON.stringify({ error: { code: 'unexpected_route', retryable: false } }));
     } catch (error) {
       res.writeHead(500).end(JSON.stringify({ error: { code: 'fixture_error', retryable: false } }));
@@ -68,19 +79,35 @@ async function setup(t, { queued = false, noKey = false, audio = wav, onCreate, 
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   baseUrl = 'http://127.0.0.1:' + server.address().port;
-  const client = new Client({ name: 'test', version: '1.0.0' });
+  const launchArgs = [];
+  if (noHardLinks) {
+    const preload = path.join(scratch, path.basename(directory) + '-no-links.mjs');
+    await writeFile(preload, `import fs from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
+fs.link = async () => { throw Object.assign(new Error('Hard links unavailable'), { code: 'ENOTSUP' }); };
+syncBuiltinESMExports();
+`);
+    t.after(() => rm(preload, { force: true }));
+    launchArgs.push('--import', preload);
+  }
+  const clients = [];
   t.after(async () => {
-    await client.close();
+    await Promise.all(clients.map(client => client.close()));
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
     await rm(directory, { recursive: true, force: true });
     assert.deepEqual(fixtureErrors, []);
   });
-  await client.connect(new StdioClientTransport({
-    command: process.execPath, args: [path.join(packageRoot, 'dist/index.js')],
-    env: { FLOWSPEECH_API_KEY: noKey ? '' : apiKey, FLOWSPEECH_BASE_URL: baseUrl, FLOWSPEECH_OUTPUT_DIR: directory },
-  }));
-  return { client, directory, requests, jobs, events, baseUrl };
+  async function connect() {
+    const client = new Client({ name: 'test', version: '1.0.0' });
+    clients.push(client);
+    await client.connect(new StdioClientTransport({
+      command: process.execPath, args: [...launchArgs, path.join(packageRoot, 'dist/index.js')],
+      env: { FLOWSPEECH_API_KEY: noKey ? '' : apiKey, FLOWSPEECH_BASE_URL: baseUrl, FLOWSPEECH_OUTPUT_DIR: directory },
+    }));
+    return client;
+  }
+  return { client: await connect(), connect, directory, requests, jobs, events, baseUrl };
 }
 const call = (client, name, args = {}, options) => client.callTool({ name, arguments: args }, undefined, options);
 const content = response => response.content[0].text;
@@ -89,7 +116,7 @@ test('read-only tool error output excludes reflected credentials', async t => {
   const { client } = await setup(t, { reflectedError: true, apiKey: 'fake_test_key' });
   for (const [name, args] of [
     ['flowspeech_quota', {}], ['flowspeech_list_voices', {}],
-    ['flowspeech_get_job', { jobId: id }],
+    ['flowspeech_get_job', { job_id: id }], ['flowspeech_cancel_job', { job_id: id }],
   ]) {
     const response = await call(client, name, args);
     assert.equal(response.isError, true);
@@ -97,15 +124,22 @@ test('read-only tool error output excludes reflected credentials', async t => {
   }
 });
 
-test('six strict tool schemas retain the existing names and require generation UUIDs', async t => {
+test('seven tool schemas retain the existing names and advertise one-call generation and speech cues', async t => {
   const { client } = await setup(t);
+  const manifest = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
+  assert.equal(client.getServerVersion().version, manifest.version);
   const tools = (await client.listTools()).tools;
   assert.deepEqual(tools.map(tool => tool.name), [
-    'flowspeech_tts', 'flowspeech_tts_multi', 'flowspeech_list_voices', 'flowspeech_quota', 'flowspeech_get_job', 'flowspeech_new_request_id',
+    'flowspeech_tts', 'flowspeech_tts_multi', 'flowspeech_list_voices', 'flowspeech_quota', 'flowspeech_get_job', 'flowspeech_cancel_job', 'flowspeech_new_request_id',
   ]);
   for (const tool of tools) assert.equal(tool.inputSchema.additionalProperties, false);
+  assert.deepEqual(tools[0].inputSchema.required, ['text']);
+  assert.deepEqual(tools[1].inputSchema.oneOf.map(branch => branch.required), [['segments'], ['text', 'speakers'], ['text']]);
   for (const name of ['flowspeech_tts', 'flowspeech_tts_multi']) {
-    assert.deepEqual(tools.find(tool => tool.name === name).inputSchema.required, ['text', 'request_id']);
+    const tool = tools.find(tool => tool.name === name);
+    assert.match(tool.description, /\[excited\].*\[pause:1\.0s\]/);
+    assert.match(tool.inputSchema.properties.text.description, /\[excited\].*\[pause:1\.0s\]/);
+    assert.equal(tool.inputSchema.properties.request_id.format, 'uuid');
   }
 });
 test('fresh caller UUIDs are local and require no API key', async t => {
@@ -137,6 +171,52 @@ test('single stdio generation saves a valid private WAV and preserves recovery i
   assert.equal(JSON.parse(content(byJob)).requestId, generated);
   assert.equal(requests.filter(request => request.method === 'POST').length, 1);
 });
+test('one-call generation creates a UUID and forwards emotion and pause syntax', async t => {
+  const { client, requests } = await setup(t);
+  const text = '[excited] Welcome! [pause:1.0s] Let’s begin.';
+  const response = await call(client, 'flowspeech_tts', { text });
+  assert.ok(!response.isError, content(response));
+  const [submitted] = requests;
+  assert.match(submitted.key, /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.ok(content(response).includes(`Request ID: ${submitted.key}`));
+  assert.equal(JSON.parse(submitted.body).input.text, text);
+});
+test('one-call retry after timeout and a new stdio process reuses the accepted request', { timeout: 5000 }, async t => {
+  const { client, connect, requests, jobs, directory, baseUrl } = await setup(t, { queued: true });
+  const args = { text: 'Hello' };
+  await assert.rejects(call(client, 'flowspeech_tts', args, { timeout: 500 }), /Request timed out/);
+  assert.equal(requests.length, 1);
+  const [{ key }] = requests;
+  assert.equal(jobs.get(key).status, 'queued');
+  await client.close();
+  jobs.set(key, job('success', { requestId: key, result: { ...job().result, url: baseUrl + '/audio.wav' } }));
+  const restarted = await connect();
+  const recovered = await call(restarted, 'flowspeech_tts', args);
+  assert.ok(!recovered.isError, content(recovered));
+  assert.match(content(recovered), new RegExp('Request ID: ' + key));
+  assert.deepEqual(await readFile(path.join(directory, `flowspeech-${id}.wav`)), wav);
+  assert.deepEqual(requests.filter(r => r.method === 'POST').map(r => r.key), [key, key]);
+  assert.equal(jobs.size, 1);
+});
+test('replaying to an existing path only reads the job and checks WAV content', async t => {
+  const { client, directory, requests } = await setup(t);
+  const output_path = path.join(directory, 'example.wav');
+  const args = { text: 'Hello', output_path };
+  const created = await call(client, 'flowspeech_tts', args);
+  const replayed = await call(client, 'flowspeech_tts', args);
+  assert.ok(!created.isError && !replayed.isError, content(replayed));
+  assert.equal(content(replayed), content(created));
+  assert.equal(requests.filter(r => r.method === 'POST').length, 1);
+  assert.ok(requests.some(r => r.path.includes('?requestId=')));
+  await writeFile(output_path, Buffer.alloc(wav.length));
+  assert.equal((await call(client, 'flowspeech_tts', args)).isError, true);
+  assert.deepEqual(await readFile(output_path), Buffer.alloc(wav.length));
+  assert.equal((await call(client, 'flowspeech_tts', { ...args, text: 'Unrelated' })).isError, true);
+  assert.equal(requests.filter(r => r.method === 'POST').length, 1);
+  const fresh = await call(client, 'flowspeech_tts', { text: args.text, request_id: requestId, output_path: path.join(directory, 'fresh.wav') });
+  assert.ok(!fresh.isError, content(fresh));
+  assert.equal(requests.filter(r => r.method === 'POST').at(-1).key, requestId);
+});
 test('multi stdio generation maps labelled speaker turns', async t => {
   const { client, requests } = await setup(t);
   const response = await call(client, 'flowspeech_tts_multi', { text: 'Speaker1: Hello\nSpeaker2: Hi', request_id: requestId });
@@ -145,24 +225,48 @@ test('multi stdio generation maps labelled speaker turns', async t => {
     { speaker: 'Speaker1', text: 'Hello', voiceName: 'Charon' }, { speaker: 'Speaker2', text: 'Hi', voiceName: 'Kore' },
   ] } });
 });
+test('multi stdio supports three named speakers and structured turns without a request ID', async t => {
+  const { client, directory, requests } = await setup(t);
+  const segments = [
+    { speaker: 'Host', text: '[excited] Welcome! [pause:1.0s] Let’s begin.', voiceName: 'Charon' },
+    { speaker: 'Guest', text: '[calmly] Thanks.\n[pause:1.0s] I’m glad to be here.\nAt 8:00 we go live.', voiceName: 'Kore' },
+    { speaker: 'Producer', text: 'We are recording.', voiceName: 'Puck' },
+  ];
+  const text = segments.map(turn => `${turn.speaker}: ${turn.text}`).join('\n');
+  const speakers = Object.fromEntries(segments.map(turn => [turn.speaker, turn.voiceName]));
+  for (const [index, args] of [{ text, speakers }, { segments }].entries()) {
+    const response = await call(client, 'flowspeech_tts_multi', { ...args, output_path: path.join(directory, `${index}.wav`) });
+    assert.ok(!response.isError, content(response));
+  }
+  const submitted = requests.filter(request => request.method === 'POST');
+  assert.equal(submitted.length, 2);
+  for (const request of submitted) assert.deepEqual(JSON.parse(request.body), { input: { mode: 'multi', segments } });
+  assert.equal(submitted[0].key, submitted[1].key);
+});
 test('all invalid generation argument types and unsupported fields fail before network', async t => {
   const { client, directory, requests } = await setup(t);
   const invalid = [
-    { text: 'Hello' }, { text: 'Hello', request_id: null }, { text: 'Hello', request_id: 42 },
+    {}, { text: 'Hello', request_id: null }, { text: 'Hello', request_id: 42 },
     { text: 42, request_id: requestId }, { text: ' ', request_id: requestId },
     { text: 'Hello', request_id: requestId, voice: null }, { text: 'Hello', request_id: requestId, voice: 42 },
     ...[42, null, [], {}, '', ' ', 'bad\0file.wav', directory + path.sep].map(output_path => ({ text: 'Hello', request_id: requestId, output_path })),
     ...['model', 'source', 'speed', 'format', 'originalText', 'speakers', 'voice_a'].map(key => ({ text: 'Hello', request_id: requestId, [key]: 'unsupported' })),
+    ...[null, 1, 'true'].map(overwrite => ({ text: 'Hello', overwrite })),
   ];
   for (const args of invalid) {
     const response = await call(client, 'flowspeech_tts', args);
     assert.equal(response.isError, true, JSON.stringify(args));
   }
   for (const args of [
-    { text: 'Speaker1: Hi' }, { text: 'Speaker1: Hi', request_id: requestId, voice_a: null },
+    {}, { text: 'Speaker1: Hi', request_id: requestId, voice_a: null },
     { text: 'Speaker1: Hi', request_id: requestId, voice_b: [] },
     { text: 'Speaker1: Hi', request_id: requestId, output_path: 42 },
     { text: 'Speaker1: Hi', request_id: requestId, speed: 2 },
+    { text: 'Unknown: Hello\nHost: Hi', speakers: { Host: 'Kore' } }, { text: 'Host: Hi', speakers: [] },
+    { text: 'Host: Hi', speakers: { Host: 'Kore' }, voice_a: 'Charon' },
+    { segments: null }, { segments: [] }, { text: 'Speaker1: Hi', segments: [] },
+    { segments: [{ speaker: 'Host', text: 'Hi' }] },
+    { segments: [{ speaker: 'Host', text: 'Hi', voiceName: 'Kore' }, { speaker: 'Host', text: 'Hello', voiceName: 'Charon' }] },
   ]) assert.equal((await call(client, 'flowspeech_tts_multi', args)).isError, true);
   assert.deepEqual(requests, []);
   assert.deepEqual(await readdir(directory), []);
@@ -189,13 +293,70 @@ test('atomic no-overwrite failure after submission retains both IDs', async t =>
   assert.equal(await readFile(path.join(directory, 'race.wav'), 'utf8'), 'preserve');
   assert.equal(requests.filter(request => request.method === 'POST').length, 1);
 });
+test('exclusive copy saves without hard links and preserves a file created during generation', async t => {
+  const { client, directory } = await setup(t, {
+    noHardLinks: true,
+    onCreate: async ({ input }, dir) => {
+      if (input.text === 'Race') await writeFile(path.join(dir, 'race.wav'), 'preserve');
+    },
+  });
+  const output_path = path.join(directory, 'example.wav');
+  const response = await call(client, 'flowspeech_tts', { text: 'Hello', output_path });
+  assert.ok(!response.isError, content(response));
+  assert.deepEqual(await readFile(output_path), wav);
+  assert.equal((await stat(output_path)).mode & 0o777, 0o600);
+  const raced = path.join(directory, 'race.wav');
+  const failure = await call(client, 'flowspeech_tts', { text: 'Race', output_path: raced });
+  assert.equal(failure.isError, true);
+  assert.equal(await readFile(raced, 'utf8'), 'preserve');
+  assert.deepEqual((await readdir(directory)).sort(), ['example.wav', 'race.wav']);
+});
+test('explicit overwrite replaces only a regular file with a complete private WAV', async t => {
+  const { client, directory, requests } = await setup(t);
+  const existing = path.join(directory, 'existing.wav');
+  const symbolic = path.join(directory, 'alias.wav');
+  await writeFile(existing, 'preserve', { mode: 0o644 });
+  await symlink(existing, symbolic);
+  const args = { text: 'Hello', overwrite: true };
+  for (const output_path of [symbolic, directory]) {
+    assert.equal((await call(client, 'flowspeech_tts', { ...args, output_path })).isError, true);
+  }
+  assert.deepEqual(requests, []);
+  assert.equal(await readFile(existing, 'utf8'), 'preserve');
+  const response = await call(client, 'flowspeech_tts', { ...args, output_path: existing });
+  assert.ok(!response.isError, content(response));
+  assert.deepEqual(await readFile(existing), wav);
+  assert.equal((await stat(existing)).mode & 0o777, 0o600);
+  assert.deepEqual((await readdir(directory)).sort(), ['alias.wav', 'existing.wav']);
+});
 test('header-only WAV is not saved by stdio', async t => {
   const { client, directory, requests } = await setup(t, { audio: Buffer.from('RIFF\x04\0\0\0WAVE') });
-  const response = await call(client, 'flowspeech_tts', { text: 'Hello', request_id: requestId });
+  const existing = path.join(directory, 'existing.wav');
+  await writeFile(existing, 'preserve');
+  const response = await call(client, 'flowspeech_tts', { text: 'Hello', overwrite: true, output_path: existing });
   assert.equal(response.isError, true);
   assert.match(content(response), /PCM WAV/);
-  assert.deepEqual(await readdir(directory), []);
+  assert.ok(content(response).includes(`requestId=${requests[0].key}`));
+  assert.ok(content(response).includes(`jobId=${id}`));
+  assert.equal(await readFile(existing, 'utf8'), 'preserve');
+  assert.deepEqual(await readdir(directory), ['existing.wav']);
   assert.equal(requests.filter(request => request.method === 'POST').length, 1);
+});
+test('cancellation tool stops a queued job and preserves a completed job', async t => {
+  const { client, jobs, requests } = await setup(t);
+  for (const args of [{}, { job_id: id, request_id: requestId }, { job_id: 'invalid' }]) {
+    assert.equal((await call(client, 'flowspeech_cancel_job', args)).isError, true);
+  }
+  assert.deepEqual(requests, []);
+  jobs.set(requestId, job('queued'));
+  const cancelled = await call(client, 'flowspeech_cancel_job', { job_id: id.toUpperCase() });
+  assert.equal(JSON.parse(content(cancelled)).status, 'cancelled');
+  assert.equal(jobs.get(requestId).status, 'cancelled');
+  jobs.set(requestId, job());
+  const completed = await call(client, 'flowspeech_cancel_job', { job_id: id });
+  assert.match(content(completed), /HTTP 409: job_already_completed/);
+  assert.equal(jobs.get(requestId).status, 'success');
+  assert.ok(requests.every(request => request.path.endsWith('/cancel') && request.method === 'POST' && !request.body && !request.key));
 });
 test('read-only tools and UUID tool reject unknown arguments before network', async t => {
   const { client, requests } = await setup(t);

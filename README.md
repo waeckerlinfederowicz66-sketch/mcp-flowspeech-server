@@ -1,121 +1,144 @@
 # FlowSpeech MCP Server
 
-## 0.2.1 Security Update
+Generate expressive narration and multi-speaker dialogue with [FlowSpeech](https://flowspeech.io/) directly from Claude Code, Cursor, or Claude Desktop. A single tool call saves a local WAV and returns the job ID and request ID.
 
-Read-only tools and returned job errors reject the configured API key in diagnostic codes. Returned job errors contain only the validated code, not remote messages or extra fields. Recovery IDs and successful result links remain available.
+- **Inline emotion & timed pauses**: Steer delivery with bracketed cues such as `[excited]`, `[calmly]`, `[whisper]`, and `[pause:1.0s]`.
+- **Multi-speaker dialogue & podcasts**: Assign distinct voices to 2 or more named speakers (`Host`, `Guest`, `Narrator`) in one request, or use structured `segments`.
+- **30+ natural voices & long-form scripts**: Multilingual narration and dialogue saved as 24 kHz mono 16-bit PCM WAV, up to 100,000 characters per request.
+- **Commercial-ready API plans**: Paid [Basic ($19/month or $156/year, 200,000 credits), Pro, and Scale plans](https://flowspeech.io/pricing) include REST API/MCP access and commercial rights.
 
-Use [FlowSpeech](https://flowspeech.io) speech generation from an MCP client. Version 0.2.1 uses the public API v1: create a job, wait for completion, download the WAV, and save it locally.
+## Quick start
 
-## Requirements
+Use Node.js 20.3 or newer and a developer API key from [FlowSpeech API settings](https://flowspeech.io/settings/apikeys). Generation requires active paid API access on Basic, Pro, or Scale and consumes account credits.
 
-- Node.js 20.3 or newer.
-- A FlowSpeech developer API key from [API settings](https://flowspeech.io/settings/apikeys).
-- Active paid Basic, Pro or Scale API access for generation. Trials do not include API access; generated speech consumes account credits.
+### Claude Code
 
-Keep keys in your MCP client's local environment or secret manager, not in prompts or public configuration files.
+Set `FLOWSPEECH_API_KEY` privately in your shell, then register the stdio server (this stores the expanded value in your local `~/.claude.json`, so keep that file private):
 
-## Configuration
+```sh
+claude mcp add --scope user --env "FLOWSPEECH_API_KEY=$FLOWSPEECH_API_KEY" \
+  --transport stdio flowspeech -- npx -y mcp-flowspeech-server@0.3.0
+claude mcp list
+```
 
-Set `FLOWSPEECH_API_KEY` in the environment used to launch your MCP client. A stdio configuration is:
+### Cursor
+
+Add this entry to `~/.cursor/mcp.json` for local desktop use, or to `.cursor/mcp.json` for the current project. Set `FLOWSPEECH_API_KEY` in the environment Cursor inherits.
+
+```json
+{
+  "mcpServers": {
+    "flowspeech": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "mcp-flowspeech-server@0.3.0"],
+      "env": {
+        "FLOWSPEECH_API_KEY": "${env:FLOWSPEECH_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+### Claude Desktop
+
+Add this entry to `claude_desktop_config.json`, replace the placeholder with your key, then quit and reopen Claude Desktop. On macOS the file is under `~/Library/Application Support/Claude/`. On Windows it is under `%APPDATA%\Claude\`. Keep this file private. If the desktop app cannot find `npx`, use its absolute path.
 
 ```json
 {
   "mcpServers": {
     "flowspeech": {
       "command": "npx",
-      "args": ["-y", "mcp-flowspeech-server@0.2.1"]
+      "args": ["-y", "mcp-flowspeech-server@0.3.0"],
+      "env": {
+        "FLOWSPEECH_API_KEY": "YOUR_DEVELOPER_API_KEY"
+      }
     }
   }
 }
 ```
 
-The MCP client must pass the key to its child process. Clients which do not inherit environment variables need a private `env` entry or their own secret configuration.
+## Generate audio
 
-| Variable | Meaning | Default |
-| --- | --- | --- |
-| `FLOWSPEECH_API_KEY` | Required developer key | None |
-| `FLOWSPEECH_OUTPUT_DIR` | Local output directory; `~/` is expanded | `~/.flowspeech-mcp/audio` |
-| `FLOWSPEECH_TIMEOUT_MS` | Total operation deadline, at most 7200000 ms | `120000` |
-| `FLOWSPEECH_BASE_URL` | Trusted API origin; never use an untrusted key recipient | `https://flowspeech.io` |
+Call `flowspeech_tts` with text. Place an emotion cue such as `[excited]`, `[calmly]`, or `[whisper]` before the words it should guide. Put `[pause:1.0s]` between phrases for a one-second pause.
 
-HTTP is allowed only for loopback test servers. Audio downloads never include the API key. Redirects are rejected, and audio downloads are limited to 100 MiB.
+```json
+{
+  "text": "[excited] Welcome back! [pause:1.0s] [calmly] Today we’ll start with a short story.",
+  "voice": "Kore"
+}
+```
+
+For a two-person podcast, call `flowspeech_tts_multi` with a labelled script and a map from speaker labels to voice names. Add more labels for more speakers. Only a label in the map starts a new turn. Other lines, including standalone pause cues, continue the preceding turn.
+
+```json
+{
+  "text": "Host: [excited] Welcome to the show! [pause:1.0s] How did you get started?\nGuest: [calmly] It began with a very small experiment.",
+  "speakers": { "Host": "Charon", "Guest": "Kore" }
+}
+```
+
+You can supply ordered turns directly with `segments`, with one consistent `voiceName` per speaker:
+
+```json
+{
+  "segments": [
+    { "speaker": "Host", "text": "[excited] Welcome!", "voiceName": "Charon" },
+    { "speaker": "Guest", "text": "[calmly] Thanks for inviting me.", "voiceName": "Kore" },
+    { "speaker": "Producer", "text": "[pause:1.0s] We’re recording.", "voiceName": "Puck" }
+  ]
+}
+```
+
+Existing scripts with `Speaker1:` and `Speaker2:` still work without a `speakers` map. Their voice overrides are `voice_a` (default `Charon`) and `voice_b` (default `Kore`).
+
+## Example prompts
+
+Once configured in Claude Code, Cursor, or Claude Desktop, you can ask your assistant directly:
+
+- `"List available female FlowSpeech voices, then read this product changelog aloud with a calm narrator and a 1-second pause before the breaking change."`
+- `"Turn these release notes into a 2-minute two-host podcast WAV using Charon as Host and Kore as Guest, and save it to ./audio/release-podcast.wav."`
+- `"Generate a dramatic game-trailer voiceover with [whisper] and [excited] cues, then tell me how many FlowSpeech credits remain."`
+- `"Regenerate ./audio/intro.wav with a warmer voice and overwrite the previous file."`
 
 ## Tools
 
-| Tool | Arguments | Result |
-| --- | --- | --- |
-| `flowspeech_new_request_id` | None; no API key needed | Fresh UUID generated locally without network access |
-| `flowspeech_tts` | Required `text` and `request_id`; optional `voice` (Kore), `output_path` | Local WAV path, job ID, request ID and usage |
-| `flowspeech_tts_multi` | Required labelled `text` and `request_id`; optional `voice_a` (Charon), `voice_b` (Kore), `output_path` | Local WAV path and recovery IDs |
-| `flowspeech_list_voices` | Optional `gender`: male, female or all | Current authenticated voice catalog |
-| `flowspeech_quota` | None | Available, remaining and reserved credits |
-| `flowspeech_get_job` | Exactly one UUID: `job_id` or `request_id` | Current job status and result; never creates work |
+| Tool | Arguments and result |
+| --- | --- |
+| `flowspeech_tts` | Required `text`, optional `voice` (`Kore`). Returns the WAV path, job ID, request ID, and usage. |
+| `flowspeech_tts_multi` | `segments`, `text` with `speakers`, or legacy `text` with optional `voice_a` and `voice_b`. Returns the WAV path, job ID, request ID, and usage. |
+| `flowspeech_new_request_id` | No arguments. Returns a local UUID without a key or network access. |
+| `flowspeech_list_voices` | Optional `gender` (`male`, `female`, or `all`). Returns the authenticated voice catalog. |
+| `flowspeech_quota` | No arguments. Returns available, remaining, and reserved credits. |
+| `flowspeech_get_job` | One of `job_id` or `request_id`. Returns the existing job and any audio result. |
+| `flowspeech_cancel_job` | Required `job_id`. Stops a pending job. If you only know the request ID, look up the job first. Completed jobs cannot be cancelled or refunded. |
 
-Call `flowspeech_new_request_id` first and retain its `request_id` before invoking
-either generation tool. Never use a fresh UUID merely because a call was interrupted.
-All tools reject unknown fields and incorrect argument types at runtime.
-Model, source, speed and format options are unsupported. Output paths are validated
-and preflighted before paid submission; the final write still uses atomic
-no-overwrite protection in case another process creates the file meanwhile.
+Both generation tools accept optional `request_id`, `output_path`, and `overwrite`. Output defaults to a job-specific file under `~/.flowspeech-mcp/audio`. To replace an existing regular file, set `overwrite: true`. The server validates and stages the complete WAV before saving. The default preserves existing files, including files created during generation. On filesystems without hard links, the server uses an exclusive copy. The output format is 24 kHz, mono, 16-bit PCM WAV.
 
-Two-speaker input uses one label per turn. Continuation lines belong to the preceding speaker:
+## Recovery
 
-```text
-Speaker1: Welcome.[pause:2s]Let's begin.
-Speaker2: Thanks for inviting me.
-Speaker1: What should we cover first?
-```
+When `request_id` is omitted, repeating the same speech input with the same API key and base URL reuses the same job even after a client restart. Local output options can change without starting a new job. If the same WAV is already at the requested path, the tool can return that path. An unrelated existing file is preserved. The lower-level TypeScript `generate(input, requestId, signal?)` method still requires an explicit UUID.
 
-Output is 24 kHz, mono, 16-bit PCM WAV. The client validates all result fields
-(`url`, `mimeType`, `sampleRate`, `channels`, `bitsPerSample`, `access`),
-usage counters, UUID correlation, RIFF length, chunk boundaries and padding,
-PCM format, and nonempty sample-aligned data before saving. Existing output files
-are never overwritten. Anyone holding a result URL can download it, so keep job
-results and recordings private when appropriate.
+1. After an interruption, repeat the same speech input with the original `request_id`, or leave it omitted if the first call omitted it. If you already have the request ID or job ID, you can use `flowspeech_get_job` to check the job directly.
+2. While it is pending, follow the API’s polling guidance. The MCP generator uses 1, 2, 3, and then 5 seconds when the API does not ask for a longer wait. The FlowSpeech API currently sends `Retry-After: 5` for pending jobs. HTTP retries also honor `Retry-After`.
+3. If the job succeeded, download its existing `result.url` without API credentials. Treat the result URL as private when appropriate, since anyone with the link can download it.
+4. If lookup returns 404 or you need to retry the local save, reuse the same UUID with unchanged text and voices. Choose an unused output path or explicitly enable `overwrite` for a regular file you want to replace.
+5. To start a new recording with the same speech input, including after a terminal failure or cancellation, call `flowspeech_new_request_id` and pass its fresh UUID explicitly. Retain that ID for any retries.
 
-## Recovery and migration
+Closing or timing out an MCP call stops the local wait. Use `flowspeech_cancel_job` to request server-side cancellation. For long scripts the MCP client may need a longer timeout than its default.
 
-Version 0.1.0 called the retired synchronous endpoint. Upgrade the npm package and
-restart your MCP client. All API tools require a developer key, including voice
-listing; only `flowspeech_new_request_id` is entirely local. All five existing
-tool names remain available.
+## Configuration
 
-**Breaking change in 0.2.0:** both generation tools now require `request_id`;
-automatic UUID creation inside a blocking generation call has been removed.
-The TypeScript client's `generate(input, requestId, signal?)` likewise requires a
-caller-known UUID. UUIDs are normalized to lowercase. The client rejects
-responses whose request or job identity does not match the requested operation.
+| Variable | Default and behavior |
+| --- | --- |
+| `FLOWSPEECH_API_KEY` | Required for API tools. Use the client’s private environment or secret manager. |
+| `FLOWSPEECH_OUTPUT_DIR` | `~/.flowspeech-mcp/audio`. A leading `~/` is expanded. |
+| `FLOWSPEECH_TIMEOUT_MS` | `120000`. Total operation deadline, up to `7200000` ms. |
+| `FLOWSPEECH_BASE_URL` | `https://flowspeech.io`. Set only to a trusted API origin. HTTP is available for loopback test servers. |
 
-The server submits `{ "input": ... }` with a UUID idempotency key, polls no faster
-than five seconds (including status retries), honors a longer `Retry-After`,
-and downloads `result.url`. A received cooldown still applies if reading the
-response body fails. It does not expect an API Base64 response. Transient API
-retries preserve the exact request ID and body, with at most five attempts per
-API request. Redirects and size-validation failures are not retried.
+The server uses [FlowSpeech public API v1](https://flowspeech.io/docs/public-api). API and audio requests reject redirects. Audio downloads omit the API key, are limited to 100 MiB, and are validated before saving.
 
-Recovery workflow:
-
-1. Call `flowspeech_new_request_id` and retain the returned UUID.
-2. Pass that UUID as `request_id` to generation with the intended text and voices.
-3. After a timeout or cancellation, call `flowspeech_get_job` with
-   `{"request_id":"YOUR_RETAINED_UUID"}`. If a job ID was already returned,
-   `{"job_id":"YOUR_JOB_UUID"}` is also supported.
-4. While queued, running, merging or settling, wait at least five seconds between
-   status calls. On success, use the existing `result.url` for a credential-free
-   download. Do not request another recording to retry a download.
-5. If lookup returns 404, retry the original generation with the same UUID and
-   unchanged text and voices. To retry local saving through MCP, replay that
-   same request with an unused output path; idempotency prevents new generation.
-
-Caller cancellation is passed to HTTP requests, response reads and polling waits.
-It never sends a server-side cancellation request. MCP clients may time out
-earlier than `FLOWSPEECH_TIMEOUT_MS` (the SDK default is 60 seconds); configure
-their timeout as appropriate. Cancelled MCP requests may not receive a final
-error response, which is why retaining the UUID **before submission** is required.
-A deleted success result has no downloadable audio. A terminal failed/cancelled
-job requires a new UUID only when intentionally requesting a new attempt.
-
-## Development and tests
+## Development
 
 ```sh
 npm ci --ignore-scripts
@@ -123,12 +146,16 @@ npm test
 npm run test:packed
 ```
 
-Tests cover mocked v1 contracts, real WAV fixtures and a loopback HTTP server
-exercised through the built MCP stdio process. Packed tests rebuild the tarball,
-inspect its members and credentials patterns, compare packaged bytes with local
-files, and rerun the client and stdio suites against the extracted package.
-They never call paid production generation. Node 20 and 22 CI run both suites.
-See [CHANGELOG.md](CHANGELOG.md) and the [public API documentation](https://flowspeech.io/docs/public-api).
+To run a local build, configure `node` as the MCP command and use the absolute path to this checkout’s `dist/index.js` as its only argument. The tests exercise the built MCP over stdio with a loopback REST fixture. Packed tests verify the tarball contents and rerun the same runtime checks against the extracted package. See [CHANGELOG.md](CHANGELOG.md).
+
+## Links
+
+- Website: [https://flowspeech.io](https://flowspeech.io/)
+- Pricing & Commercial License: [https://flowspeech.io/pricing](https://flowspeech.io/pricing)
+- Public API Documentation: [https://flowspeech.io/docs/public-api](https://flowspeech.io/docs/public-api)
+- OpenAPI Specification: [https://flowspeech.io/openapi.json](https://flowspeech.io/openapi.json)
+- npm Package: [https://www.npmjs.com/package/mcp-flowspeech-server](https://www.npmjs.com/package/mcp-flowspeech-server)
+- Support: `support@flowspeech.io`
 
 ## License
 

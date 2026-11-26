@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export type SpeechInput =
@@ -35,6 +36,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const PENDING = new Set(['queued', 'running', 'merging', 'settling']);
 const TERMINAL = new Set(['success', 'failed', 'cancelled']);
 const TRANSIENT = new Set([429, 500, 502, 503, 504]);
+const POLL_DELAYS = [1000, 2000, 3000, 5000];
 
 class InvalidResponse extends Error {}
 function object(value: unknown): Record<string, unknown> {
@@ -96,7 +98,7 @@ async function boundedBody(response: Response, maximum: number, signal: AbortSig
   }
   return Buffer.concat(chunks, length);
 }
-function speechInput(value: unknown): SpeechInput {
+export function validateSpeechInput(value: unknown): SpeechInput {
   const input = object(value);
   let result: SpeechInput;
   if (input.mode === 'single') {
@@ -122,16 +124,33 @@ function speechInput(value: unknown): SpeechInput {
   if (Buffer.byteLength(JSON.stringify({ input: result })) > 1024 * 1024) throw new Error('Input exceeds the JSON body limit');
   return result;
 }
-export function dialogueInput(text: string, voiceA: string, voiceB: string): SpeechInput {
+export function dialogueInput(text: string, voiceA: string, voiceB: string, speakers?: unknown): SpeechInput {
   nonempty(text, 'dialogue');
-  const segments: { speaker: string; text: string; voiceName: string }[] = [];
-  for (const line of text.split(/\r?\n/)) {
-    const match = /^(Speaker[12]):\s*(.*)$/.exec(line.trim());
-    if (match) segments.push({ speaker: match[1], text: match[2], voiceName: match[1] === 'Speaker1' ? voiceA : voiceB });
-    else if (line.trim() && segments.length) segments[segments.length - 1].text += '\n' + line;
-    else if (line.trim()) throw new Error('Dialogue must start with Speaker1: or Speaker2:');
+  const voices = new Map([['Speaker1', voiceA], ['Speaker2', voiceB]]);
+  if (speakers !== undefined) {
+    const entries = Object.entries(object(speakers));
+    if (entries.length === 0 || entries.length > 1000) throw new Error('Expected 1 to 1000 speaker assignments');
+    voices.clear();
+    for (const [label, voice] of entries) {
+      if (!label.trim() || label.length > 100 || label !== label.trim() || /[:\r\n]/.test(label)) {
+        throw new Error('Speaker labels must be 1 to 100 characters without colons, line breaks or surrounding whitespace');
+      }
+      voices.set(label, nonempty(voice, 'voice name', 100));
+    }
   }
-  return speechInput({ mode: 'multi', segments });
+  const segments: { speaker: string; text: string; voiceName: string }[] = [];
+  const labelPattern = speakers === undefined ? /^(Speaker[12]):\s*(.*)$/ : /^([^:]{1,100}):\s*(.*)$/;
+  for (const line of text.split(/\r?\n/)) {
+    const match = labelPattern.exec(line.trim());
+    const voiceName = match ? voices.get(match[1]) : undefined;
+    if (match && voiceName !== undefined) {
+      segments.push({ speaker: match[1], text: match[2], voiceName });
+    } else if (line.trim() && segments.length) segments[segments.length - 1].text += '\n' + line;
+    else if (line.trim()) throw new Error(speakers === undefined
+      ? 'Dialogue must start with Speaker1: or Speaker2:'
+      : 'Dialogue must start with a label from speakers followed by a colon');
+  }
+  return validateSpeechInput({ mode: 'multi', segments });
 }
 export function validateWav(audio: Uint8Array): void {
   const bytes = Buffer.from(audio.buffer, audio.byteOffset, audio.byteLength);
@@ -199,17 +218,17 @@ export class FlowSpeechClient {
     const timeout = AbortSignal.timeout(Math.max(1, Math.ceil(Math.min(requestLimit, this.remaining(context)))));
     return context.signal ? AbortSignal.any([timeout, context.signal]) : timeout;
   }
-  private async api(path: string, context: Context, body?: unknown): Promise<{ data: Record<string, unknown>; headers: Headers }> {
-    const encoded = body === undefined ? undefined : JSON.stringify(body);
+  private async api(path: string, context: Context, post?: { input?: SpeechInput }): Promise<{ data: Record<string, unknown>; headers: Headers }> {
+    const encoded = post?.input === undefined ? undefined : JSON.stringify({ input: post.input });
     for (let attempt = 0; attempt < 5; attempt++) {
       this.remaining(context);
       let response: Response | undefined;
       let raw: Uint8Array;
-      const fallback = Math.max(body === undefined ? 5000 : 1000, 1000 * 2 ** attempt);
+      const fallback = Math.max(post === undefined ? 5000 : 1000, 1000 * 2 ** attempt);
       try {
         const signal = this.signal(context, 30_000);
         response = await this.fetcher(this.baseUrl + path, {
-          method: body === undefined ? 'GET' : 'POST', redirect: 'manual', credentials: 'omit', signal,
+          method: post === undefined ? 'GET' : 'POST', redirect: 'manual', credentials: 'omit', signal,
           headers: {
             Authorization: `Bearer ${this.options.apiKey}`,
             ...(encoded === undefined ? {} : { 'Content-Type': 'application/json', 'Idempotency-Key': context.requestId! }),
@@ -310,16 +329,40 @@ export class FlowSpeechClient {
     const requestId = validateId(id);
     return this.job((await this.api(`/api/v1/tts/jobs?requestId=${requestId}`, this.context(signal))).data, { requestId });
   }
+  requestIdFor(input: SpeechInput): string {
+    const payload = JSON.stringify(['flowspeech-mcp-v1', this.baseUrl, validateSpeechInput(input)]);
+    const digest = createHmac('sha256', this.options.apiKey).update(payload).digest();
+    // UUIDv8 leaves room for an application-defined digest with the standard variant.
+    digest[6] = (digest[6] & 0x0f) | 0x80;
+    digest[8] = (digest[8] & 0x3f) | 0x80;
+    const hex = digest.subarray(0, 16).toString('hex');
+    return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
+  }
+  async cancelJob(id: string, signal?: AbortSignal): Promise<Job> {
+    const jobId = validateId(id);
+    const result = await this.api(`/api/v1/tts/jobs/${jobId}/cancel`, this.context(signal), {});
+    const job = this.job(result.data, { jobId });
+    if (job.status !== 'cancelled' && job.status !== 'failed') throw new InvalidResponse('Cancellation did not return a stopped job');
+    return job;
+  }
   async generate(input: SpeechInput, requestId: string, signal?: AbortSignal): Promise<{ job: Job; audio: Uint8Array; requestId: string }> {
-    requestId = validateId(requestId);
+    return this.recording(validateId(requestId), signal, { input });
+  }
+  async resumeGeneration(requestId: string, signal?: AbortSignal): Promise<{ job: Job; audio: Uint8Array; requestId: string }> {
+    return this.recording(validateId(requestId), signal);
+  }
+  private async recording(requestId: string, signal?: AbortSignal, submission?: { input: SpeechInput }): Promise<{ job: Job; audio: Uint8Array; requestId: string }> {
     const context = this.context(signal, requestId);
     try {
-      const validated = speechInput(input);
-      let result = await this.api('/api/v1/tts/jobs', context, { input: validated });
+      let result = submission
+        ? await this.api('/api/v1/tts/jobs', context, { input: validateSpeechInput(submission.input) })
+        : await this.api(`/api/v1/tts/jobs?requestId=${requestId}`, context);
       let job = this.job(result.data, { requestId });
       context.jobId = job.id;
+      let poll = 0;
       while (PENDING.has(job.status)) {
-        await this.pause(retryDelay(result.headers, 5000), context);
+        await this.pause(retryDelay(result.headers, POLL_DELAYS[Math.min(poll, POLL_DELAYS.length - 1)]), context);
+        poll++;
         result = await this.api(`/api/v1/tts/jobs/${context.jobId}`, context);
         job = this.job(result.data, { jobId: context.jobId, requestId });
       }
