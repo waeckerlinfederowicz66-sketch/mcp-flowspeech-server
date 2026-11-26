@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0
+
+- Allow one-call generation with an automatic UUID that reuses the same job for unchanged speech after a timeout or restart. Use a fresh explicit UUID to generate a new recording of the same speech.
+- Support arbitrary speaker labels and ordered segments while retaining legacy `Speaker1:` / `Speaker2:` scripts.
+- Add explicit server-side cancellation through `flowspeech_cancel_job`.
+- Stage validated WAV files before saving, preserve existing destinations by default (including filesystems without hard links), and add opt-in `overwrite` for existing regular files.
+- Back off pending-job polls from 1 to 2, 3, then 5 seconds while honoring a longer `Retry-After`.
+- Document emotion cues, timed pauses, and setup for Claude Code, Cursor, and Claude Desktop.
+
 ## 0.2.1 - 2026-10-27
 
 - Filter reflected credentials and unknown diagnostic fields on read-only tools and terminal-job errors.

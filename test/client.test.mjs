@@ -19,12 +19,35 @@ test('single creation, all pending states and credential-free audio', async () =
   assert.equal(h.calls.at(-1).init.headers, undefined);
   assert.ok(h.calls.every(call => call.init.redirect === 'manual' && call.init.credentials === 'omit'));
 });
+test('polling backs off from one second and honors the current five-second server hint', async () => {
+  const states = ['queued', 'running', 'merging', 'settling', 'settling'];
+  for (const [headers, expected] of [
+    [{}, [1000, 2000, 3000, 5000, 5000]],
+    [{ 'Retry-After': '5' }, [5000, 5000, 5000, 5000, 5000]],
+  ]) {
+    const h = harness([...states.map(state => json(job(state), 200, headers)), json(job()), new Response(wav)]);
+    await h.client.generate(input, requestId);
+    assert.deepEqual(h.sleeps, expected);
+  }
+});
 test('network retries preserve the exact body and UUID', async () => {
   const h = harness([new Error('network'), json(job()), new Response(wav)]);
   await h.client.generate(input, requestId);
   assert.equal(h.calls[0].init.body, h.calls[1].init.body);
   assert.equal(h.calls[0].init.headers['Idempotency-Key'], h.calls[1].init.headers['Idempotency-Key']);
   assert.deepEqual(h.sleeps, [1000]);
+});
+test('automatic request IDs are stable and scoped to speech, API key and origin', () => {
+  const base = new FlowSpeechClient({ apiKey: 'test-key' });
+  const derived = base.requestIdFor(input);
+  assert.equal(derived, new FlowSpeechClient({ apiKey: 'test-key', baseUrl: 'https://flowspeech.io/' }).requestIdFor(input));
+  assert.equal(validateId(derived), derived);
+  for (const changed of [
+    base.requestIdFor({ ...input, text: 'Hello again' }),
+    base.requestIdFor({ ...input, voiceName: 'Charon' }),
+    new FlowSpeechClient({ apiKey: 'another-key' }).requestIdFor(input),
+    new FlowSpeechClient({ apiKey: 'test-key', baseUrl: 'https://api.example.test' }).requestIdFor(input),
+  ]) assert.notEqual(derived, changed);
 });
 test('429 and retryable 503 honor Retry-After', async () => {
   const h = harness([json({ error: { retryable: true } }, 429, { 'Retry-After': '9' }),
@@ -53,7 +76,7 @@ for (const failed of [() => new Error('network'), () => brokenResponse(), () => 
   test('every status retry waits at least five seconds: ' + failed.toString(), async () => {
     const h = harness([json(job('queued'), 202), failed(), json(job()), new Response(wav)]);
     await h.client.generate(input, requestId);
-    assert.deepEqual(h.sleeps, [5000, 5000]);
+    assert.deepEqual(h.sleeps, [1000, 5000]);
     assert.equal(h.calls[2].at - h.calls[1].at, 5000);
   });
 }
@@ -62,6 +85,16 @@ test('long required cooldown exceeds deadline without another request', async ()
   await assert.rejects(h.client.generate(input, requestId), /Required wait.*requestId=/);
   assert.equal(h.calls.length, 1);
   assert.deepEqual(h.sleeps, []);
+});
+test('cancel uses a bodyless POST and validates the returned job', async () => {
+  const h = harness([json(job('cancelled')), json(job('cancelled', { id: requestId })), json(job('running'))]);
+  assert.equal((await h.client.cancelJob(id.toUpperCase())).status, 'cancelled');
+  assert.equal(h.calls[0].url, `https://flowspeech.io/api/v1/tts/jobs/${id}/cancel`);
+  assert.equal(h.calls[0].init.method, 'POST');
+  assert.equal(h.calls[0].init.body, undefined);
+  assert.deepEqual(h.calls[0].init.headers, { Authorization: 'Bearer test-key' });
+  await assert.rejects(h.client.cancelJob(id), /changed the job ID/);
+  await assert.rejects(h.client.cancelJob(id), /Cancellation did not return a stopped job/);
 });
 test('multi input preserves turn order and continuation text', async () => {
   const multi = dialogueInput('Speaker1: Hello\nMore text\nSpeaker2: Hi\nSpeaker1: Bye', 'Charon', 'Kore');
@@ -232,7 +265,7 @@ test('invalid configuration fails locally', () => {
   assert.equal(validateId(requestId.toUpperCase()), requestId);
 });
 test('deadline ends before a required poll with both recovery IDs', async () => {
-  const h = harness([json(job('queued'), 202)], { timeoutMs: 4000 });
+  const h = harness([json(job('queued'), 202, { 'Retry-After': '5' })], { timeoutMs: 4000 });
   await assert.rejects(h.client.generate(input, requestId), new RegExp('timeout.*requestId=' + requestId + '.*jobId=' + id));
   assert.equal(h.calls.length, 1);
 });

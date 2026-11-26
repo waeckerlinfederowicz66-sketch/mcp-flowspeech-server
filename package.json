@@ -1,7 +1,7 @@
 {
   "name": "mcp-flowspeech-server",
-  "version": "0.2.1",
-  "description": "MCP server for the FlowSpeech public API with asynchronous speech jobs, voice discovery and quota checks",
+  "version": "0.3.0",
+  "description": "MCP server for FlowSpeech text-to-speech — inline emotion cues, timed pauses, and multi-speaker dialogue for Claude Code, Cursor, and MCP clients",
   "keywords": [
     "mcp",
     "mcp-server",
@@ -10,7 +10,12 @@
     "flowspeech",
     "ai",
     "voice",
-    "speech-synthesis"
+    "speech-synthesis",
+    "multi-speaker",
+    "emotion",
+    "podcast",
+    "claude-code",
+    "cursor"
   ],
   "homepage": "https://flowspeech.io",
   "repository": {
