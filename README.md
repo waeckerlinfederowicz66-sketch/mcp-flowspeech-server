@@ -1,5 +1,7 @@
 # FlowSpeech MCP Server
 
+[![FlowSpeech MCP server](https://glama.ai/mcp/servers/waeckerlinfederowicz66-sketch/mcp-flowspeech-server/badges/score.svg)](https://glama.ai/mcp/servers/waeckerlinfederowicz66-sketch/mcp-flowspeech-server)
+
 Generate expressive narration and multi-speaker dialogue with [FlowSpeech](https://flowspeech.io/) directly from Claude Code, Cursor, or Claude Desktop. A single tool call saves a local WAV and returns the job ID and request ID.
 
 - **Inline emotion & timed pauses**: Steer delivery with bracketed cues such as `[excited]`, `[calmly]`, `[whisper]`, and `[pause:1.0s]`.
@@ -155,6 +157,7 @@ To run a local build, configure `node` as the MCP command and use the absolute p
 - Public API Documentation: [https://flowspeech.io/docs/public-api](https://flowspeech.io/docs/public-api)
 - OpenAPI Specification: [https://flowspeech.io/openapi.json](https://flowspeech.io/openapi.json)
 - npm Package: [https://www.npmjs.com/package/mcp-flowspeech-server](https://www.npmjs.com/package/mcp-flowspeech-server)
+- Glama Directory: [https://glama.ai/mcp/servers/waeckerlinfederowicz66-sketch/mcp-flowspeech-server](https://glama.ai/mcp/servers/waeckerlinfederowicz66-sketch/mcp-flowspeech-server)
 - Support: `support@flowspeech.io`
 
 ## License
